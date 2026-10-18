@@ -27,6 +27,7 @@ import {
   updateWorkItem,
   createTeam,
   addTeamMember,
+  getTeamMembers,
   logoutUser,
 } from "./api/client";
 
@@ -129,7 +130,7 @@ function Field({ label, children }) {
   );
 }
 
-/* create team form */
+/* Create team form */
 
 function CreateTeamForm({ onClose, onCreated }) {
   const [name, setName] = useState("");
@@ -235,7 +236,7 @@ function CreateTeamForm({ onClose, onCreated }) {
   );
 }
 
-/* team member mangaement */
+/* Team member management */
 
 function TeamMemberPanel({ user, activeTeam }) {
   const [email, setEmail] = useState("");
@@ -244,13 +245,89 @@ function TeamMemberPanel({ user, activeTeam }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
+  const [members, setMembers] = useState([]);
+  const [loadingMembers, setLoadingMembers] = useState(false);
+  const [membersError, setMembersError] = useState("");
+
   const isAccountAdmin = user?.account_role === "admin";
+
+  const loadMembers = useCallback(async () => {
+    if (!activeTeam?.id) {
+      setMembers([]);
+      setMembersError("");
+      return;
+    }
+
+    setLoadingMembers(true);
+    setMembersError("");
+
+    try {
+      const result = await getTeamMembers(activeTeam.id);
+
+      // Supports both the original array response and the
+      // object response: { members: [...], member_count: number }.
+      const memberList = Array.isArray(result)
+        ? result
+        : Array.isArray(result?.members)
+          ? result.members
+          : [];
+
+      setMembers(memberList);
+    } catch (err) {
+      setMembersError(errorMessage(err));
+    } finally {
+      setLoadingMembers(false);
+    }
+  }, [activeTeam?.id]);
 
   useEffect(() => {
     setEmail("");
     setRole("member");
     setMessage("");
     setError("");
+  }, [activeTeam?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchMembers() {
+      if (!activeTeam?.id) {
+        setMembers([]);
+        setMembersError("");
+        return;
+      }
+
+      setLoadingMembers(true);
+      setMembersError("");
+
+      try {
+        const result = await getTeamMembers(activeTeam.id);
+
+        const memberList = Array.isArray(result)
+          ? result
+          : Array.isArray(result?.members)
+            ? result.members
+            : [];
+
+        if (!cancelled) {
+          setMembers(memberList);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setMembersError(errorMessage(err));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingMembers(false);
+        }
+      }
+    }
+
+    fetchMembers();
+
+    return () => {
+      cancelled = true;
+    };
   }, [activeTeam?.id]);
 
   async function handleSubmit(event) {
@@ -276,19 +353,18 @@ function TeamMemberPanel({ user, activeTeam }) {
       const added = await addTeamMember(activeTeam.id, memberEmail, role);
 
       setMessage(
-        `${added.name || added.email} was added to ${activeTeam.name}.`,
+        `${added.name || added.email || memberEmail} was added to ${activeTeam.name}.`,
       );
+
       setEmail("");
       setRole("member");
+
+      await loadMembers();
     } catch (err) {
       setError(errorMessage(err));
     } finally {
       setSaving(false);
     }
-  }
-
-  if (!isAccountAdmin) {
-    return null;
   }
 
   return (
@@ -302,66 +378,137 @@ function TeamMemberPanel({ user, activeTeam }) {
             />
             Team members
           </h2>
-          <p>
-            Add registered users to {activeTeam?.name || "the selected team"}.
-          </p>
+
+          <p>Members of {activeTeam?.name || "the selected team"}.</p>
         </div>
 
-        <ShieldCheck size={24} />
+        <button
+          type="button"
+          className="icon-button"
+          title="Refresh team members"
+          aria-label="Refresh team members"
+          onClick={loadMembers}
+          disabled={loadingMembers || !activeTeam?.id}
+        >
+          <RefreshCw size={18} />
+        </button>
       </div>
 
-      <form className="create-task-form" onSubmit={handleSubmit}>
-        <Field label="Registered user's email *">
-          <input
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            placeholder="colleague@example.com"
-            autoComplete="off"
-            required
-          />
-        </Field>
+      <div className="table-footer">
+        {members.length} {members.length === 1 ? "member" : "members"}
+      </div>
 
-        <Field label="Team role">
-          <select
-            value={role}
-            onChange={(event) => setRole(event.target.value)}
-          >
-            <option value="member">Member</option>
-            <option value="admin">Team Admin</option>
-          </select>
-        </Field>
+      <ErrorMessage message={membersError} />
 
-        <ErrorMessage message={error} />
-
-        {message && (
-          <p className="success-message" role="status">
-            <CircleCheck size={16} />
-            {message}
-          </p>
-        )}
-
-        <div className="create-task-actions">
-          <button
-            type="submit"
-            className="primary-button"
-            disabled={saving || !activeTeam?.id}
-          >
-            <UserPlus size={17} />
-            {saving ? "Adding member..." : "Add team member"}
-          </button>
+      {loadingMembers ? (
+        <div className="empty-state">Loading team members...</div>
+      ) : members.length === 0 ? (
+        <div className="empty-state">
+          <Users size={28} />
+          <p>No team members found.</p>
         </div>
+      ) : (
+        <div className="task-table-wrapper">
+          <table className="task-table">
+            <thead>
+              <tr>
+                <th>Member</th>
+                <th>Email</th>
+                <th>Team role</th>
+                <th>Joined</th>
+              </tr>
+            </thead>
 
-        <p className="dialog-subtitle">
-          The user must already have an OpsFlow account. Account administrator
-          access is separate from the team role.
-        </p>
-      </form>
+            <tbody>
+              {members.map((member) => (
+                <tr key={member.user_id ?? member.id ?? member.email}>
+                  <td>
+                    <div className="task-title">
+                      {member.name || "Unnamed user"}
+                    </div>
+                  </td>
+
+                  <td>{member.email || "—"}</td>
+
+                  <td>
+                    <span className="status-badge">
+                      {member.role || "member"}
+                    </span>
+                  </td>
+
+                  <td>
+                    {member.joined_at ? formatDate(member.joined_at) : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {isAccountAdmin && (
+        <>
+          <div className="section-heading" style={{ marginTop: 24 }}>
+            <div>
+              <h3>Add a team member</h3>
+              <p>
+                The user must already have a DeskOps account. Account
+                administrator access is separate from the team role.
+              </p>
+            </div>
+
+            <ShieldCheck size={24} />
+          </div>
+
+          <form className="create-task-form" onSubmit={handleSubmit}>
+            <Field label="Registered user's email *">
+              <input
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="colleague@example.com"
+                autoComplete="off"
+                required
+              />
+            </Field>
+
+            <Field label="Team role">
+              <select
+                value={role}
+                onChange={(event) => setRole(event.target.value)}
+              >
+                <option value="member">Member</option>
+                <option value="admin">Team Admin</option>
+              </select>
+            </Field>
+
+            <ErrorMessage message={error} />
+
+            {message && (
+              <p className="success-message" role="status">
+                <CircleCheck size={16} />
+                {message}
+              </p>
+            )}
+
+            <div className="create-task-actions">
+              <button
+                type="submit"
+                className="primary-button"
+                disabled={saving || !activeTeam?.id}
+              >
+                <UserPlus size={17} />
+                {saving ? "Adding member..." : "Add team member"}
+              </button>
+            </div>
+          </form>
+        </>
+      )}
     </section>
   );
 }
 
-/* work item form */
+/* Work item form */
 
 function WorkItemForm({ item, teamId, onClose, onSaved }) {
   const editing = Boolean(item);
@@ -513,6 +660,7 @@ function WorkItemForm({ item, teamId, onClose, onSaved }) {
             <h2 id="work-item-form-title">
               {editing ? "Edit work item" : "Create work item"}
             </h2>
+
             <p className="dialog-subtitle">
               {editing
                 ? "Update the task details."
@@ -639,7 +787,7 @@ function WorkItemForm({ item, teamId, onClose, onSaved }) {
   );
 }
 
-/* sidebar */
+/* Sidebar */
 
 function Sidebar({
   user,
@@ -745,7 +893,7 @@ function Sidebar({
   );
 }
 
-/* team dashb */
+/* Team dashboard */
 
 function TeamDashboard({ user, teamId, activeTeam }) {
   const [items, setItems] = useState([]);
@@ -1067,7 +1215,7 @@ function TeamDashboard({ user, teamId, activeTeam }) {
   );
 }
 
-/* main dashb */
+/* Main dashboard */
 
 export default function Dashboard({ user, onLogout }) {
   const [teams, setTeams] = useState([]);
@@ -1113,9 +1261,7 @@ export default function Dashboard({ user, onLogout }) {
   }, []);
 
   useEffect(() => {
-    loadTeams().catch(() => {
-
-    });
+    loadTeams().catch(() => {});
   }, [loadTeams]);
 
   async function handleTeamCreated(createdTeam) {
@@ -1150,14 +1296,16 @@ export default function Dashboard({ user, onLogout }) {
     }
   }
 
+  const activeTeam = teams.find(
+    (team) => String(team.id) === String(activeTeamId),
+  );
+
   return (
     <div className="app-shell">
       <Sidebar
         user={user}
         teams={teams}
-        activeTeam={teams.find(
-          (team) => String(team.id) === String(activeTeamId),
-        )}
+        activeTeam={activeTeam}
         onTeamChange={setActiveTeamId}
         onLogout={handleLogout}
         onCreateTeam={() => setShowCreateTeam(true)}
@@ -1187,9 +1335,7 @@ export default function Dashboard({ user, onLogout }) {
             key={activeTeamId}
             user={user}
             teamId={activeTeamId}
-            activeTeam={teams.find(
-              (team) => String(team.id) === String(activeTeamId),
-            )}
+            activeTeam={activeTeam}
           />
         )}
       </div>

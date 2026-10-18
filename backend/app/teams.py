@@ -1,13 +1,16 @@
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
+
 from app.auth import get_current_user
 from app.database import get_db
 from app.models import Team, TeamMembership, User
 
 router = APIRouter(prefix="/teams", tags=["Teams"])
+
 
 class TeamCreate(BaseModel):
     name: str = Field(min_length=2, max_length=120)
@@ -22,6 +25,7 @@ class TeamCreate(BaseModel):
             )
         return value
 
+
 class AddMemberRequest(BaseModel):
     email: EmailStr
     role: str = Field(default="member")
@@ -33,6 +37,7 @@ class AddMemberRequest(BaseModel):
         if value not in ("admin", "member"):
             raise ValueError("Role must be 'admin' or 'member'")
         return value
+
 
 def get_membership(
     team_id: int,
@@ -54,6 +59,7 @@ def get_membership(
 
     return membership
 
+
 def require_account_admin(current_user: User) -> None:
     """Require an account-level administrator."""
     if current_user.account_role != "admin":
@@ -61,6 +67,7 @@ def require_account_admin(current_user: User) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only account administrators can add team members",
         )
+
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def create_team(
@@ -96,6 +103,7 @@ def create_team(
         "created_at": team.created_at,
     }
 
+
 @router.get("/")
 def list_teams(
     current_user: User = Depends(get_current_user),
@@ -108,15 +116,27 @@ def list_teams(
         .order_by(Team.name)
     ).all()
 
-    return [
-        {
-            "id": team.id,
-            "name": team.name,
-            "role": role,
-            "created_at": team.created_at,
-        }
-        for team, role in results
-    ]
+    teams = []
+
+    for team, role in results:
+        member_count = db.scalar(
+            select(func.count())
+            .select_from(TeamMembership)
+            .where(TeamMembership.team_id == team.id)
+        )
+
+        teams.append(
+            {
+                "id": team.id,
+                "name": team.name,
+                "role": role,
+                "created_at": team.created_at,
+                "member_count": member_count or 0,
+            }
+        )
+
+    return teams
+
 
 @router.get("/{team_id}/members")
 def list_team_members(
@@ -136,7 +156,7 @@ def list_team_members(
         .order_by(User.name)
     ).all()
 
-    return [
+    members = [
         {
             "user_id": user.id,
             "name": user.name,
@@ -146,6 +166,12 @@ def list_team_members(
         }
         for user, role, joined_at in results
     ]
+
+    return {
+        "team_id": team_id,
+        "member_count": len(members),
+        "members": members,
+    }
 
 @router.post(
     "/{team_id}/members",
@@ -213,10 +239,17 @@ def add_team_member(
             detail="Could not add team member",
         )
 
+    member_count = db.scalar(
+        select(func.count())
+        .select_from(TeamMembership)
+        .where(TeamMembership.team_id == team_id)
+    )
+
     return {
         "team_id": team_id,
         "user_id": member.id,
         "name": member.name,
         "email": member.email,
         "role": membership.role,
+        "member_count": member_count or 0,
     }

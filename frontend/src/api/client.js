@@ -165,8 +165,7 @@ export async function getWorkItemActivity(itemId) {
 }
 
 export async function createTeam(teamData) {
-  const name =
-    typeof teamData === "string" ? teamData : teamData?.name;
+  const name = typeof teamData === "string" ? teamData : teamData?.name;
 
   if (typeof name !== "string" || !name.trim()) {
     throw new Error("Please enter a valid team name.");
@@ -185,6 +184,11 @@ export async function addTeamMember(teamId, email, role = "member") {
     role,
   });
 
+  return response.data;
+}
+
+export async function getTeamMembers(teamId) {
+  const response = await api.get(`/teams/${teamId}/members`);
   return response.data;
 }
 
